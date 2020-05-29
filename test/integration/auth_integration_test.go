@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
@@ -35,7 +34,7 @@ type inMemoryData struct {
 	users map[string]demoUser
 }
 
-func (id inMemoryData) authorizeHumanUser(uc auth.UserCredentials) error {
+func (id inMemoryData) authorizeHumanUser(uc auth.Credentials) error {
 	u, ok := id.users[uc.Id]
 	if !ok || uc.Password != u.Password {
 		return auth.InvalidUser(errors.New("i dont know this person"))
@@ -43,11 +42,15 @@ func (id inMemoryData) authorizeHumanUser(uc auth.UserCredentials) error {
 	return nil
 }
 
-func (id inMemoryData) authorizeMachineUser(_ auth.UserCredentials) error {
+func (id inMemoryData) authorizeMachineUser(_ auth.Credentials) error {
 	return nil
 }
 
-func (id inMemoryData) getScopes(uc auth.UserCredentials) (auth.Scopes, error) {
+func (id inMemoryData) validateClient(credentials auth.Credentials, clientId string) (bool, error) {
+	return "forbidden-aud" != clientId, nil
+}
+
+func (id inMemoryData) getScopes(uc auth.Credentials) (auth.Scopes, error) {
 	if uc.Grant == auth.ClientCredentials {
 		return "admin", nil
 	}
@@ -74,9 +77,13 @@ func initMockService(t *testing.T, users []demoUser, duration time.Duration, dom
 	}
 
 	inMemory := inMemoryData{data}
-	a := auth.DefaultAuthHandler(inMemory.authorizeHumanUser, inMemory.authorizeHumanUser, signer, inMemory.getScopes)
-	a.AddAuthProtocol(router, middleware)
+	a := auth.BasicGinAuth(inMemory.authorizeHumanUser,
+		inMemory.authorizeHumanUser,
+		signer,
+		inMemory.getScopes,
+		inMemory.validateClient)
 
+	a.AddAuthProtocol(router, middleware)
 	demoPath.GET("/admin", auth.WithScopes(func(ctx *gin.Context) {
 		ctx.JSON(http.StatusOK, gin.H{"result": "you are an admin"})
 	}, []string{"admin"}))
@@ -93,42 +100,73 @@ func initMockService(t *testing.T, users []demoUser, duration time.Duration, dom
 }
 
 func TestLogin(t *testing.T) {
-	users := []demoUser{demoUser{Name: "tito", Password: "puente", Scopes: "action-doer"}}
+	users := []demoUser{{Name: "tito", Password: "puente", Scopes: "action-doer"}}
 	pk, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 
 	t.Run("Human user can login", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK, "action-doer,something", "")
 		authToken, ok := resp["access_token"]
 		assert.True(t, ok, "Result must contain an access token")
-		assertToken(authToken.(string), pk, t)
+		aClaims := getClaims(authToken.(string), pk, t)
+		//Only the user assigned scopes are returned
+		assert.Equal(t, "action-doer", aClaims["scope"].(string))
+		//if no aud is provided the default is the auth service
+		assert.Equal(t, "www.myd0main.com", aClaims["aud"].(string))
 
 		refresh, ok := resp["refresh_token"]
 		assert.True(t, ok, "Result must contain an access token")
-		assertToken(refresh.(string), pk, t)
+		rClaims := getClaims(refresh.(string), pk, t)
+		assert.Equal(t, "auth/refresh", rClaims["scope"].(string))
+		//if no aud is provided the default is the auth service
+		assert.Equal(t, "www.myd0main.com", rClaims["aud"].(string))
 	})
 
+	t.Run("If no valid scope provided, then no scope is present", func(t *testing.T) {
+		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
+		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK, "", "")
+		authToken, _ := resp["access_token"]
+		aClaims := getClaims(authToken.(string), pk, t)
+		//Only the user assigned scopes are returned
+		assert.Equal(t, "", aClaims["scope"].(string))
+
+		resp = router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK, "something,else,read:stuff", "")
+		authToken, _ = resp["access_token"]
+		aClaims = getClaims(authToken.(string), pk, t)
+		//Only the user assigned scopes are returned
+		assert.Equal(t, "", aClaims["scope"].(string))
+	})
+
+	t.Run("User cannot get tokens for a client(audience) where them are not allowed", func(t *testing.T) {
+		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
+		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK, "", "other-service")
+		authToken, _ := resp["access_token"]
+		aClaims := getClaims(authToken.(string), pk, t)
+		assert.Equal(t, "other-service", aClaims["aud"].(string))
+
+		router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusUnauthorized, "", "forbidden-aud")
+	})
 	t.Run("Client Credential login", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK, "action-doer", "")
 		authToken, ok := resp["access_token"]
 		assert.True(t, ok, "Result must contain an access token")
-		assertToken(authToken.(string), pk, t)
+		getClaims(authToken.(string), pk, t)
 
 		refresh, ok := resp["refresh_token"]
 		assert.True(t, ok, "Result must contain an access token")
-		assertToken(refresh.(string), pk, t)
+		getClaims(refresh.(string), pk, t)
 	})
 
 	t.Run("Login should fail if user is invalid", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		router.doLogin("NOT-TITO", "puente", auth.PasswordCredentials, http.StatusUnauthorized)
+		router.doLogin("NOT-TITO", "puente", auth.PasswordCredentials, http.StatusUnauthorized, "action-doer", "")
 	})
 
 	t.Run("Login should fail if password is invalid", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		router.doLogin("tito", "NOT-puente", auth.PasswordCredentials, http.StatusUnauthorized)
+		router.doLogin("tito", "NOT-puente", auth.PasswordCredentials, http.StatusUnauthorized, "action-doer", "")
 	})
 }
 
@@ -139,31 +177,39 @@ func TestGetAccessToken(t *testing.T) {
 
 	t.Run("We should be able to get a new access token with the refresh token", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK, "action-doer", "")
 		accessTkn := resp["access_token"].(string)
 		refresh := resp["refresh_token"].(string)
 
+		aClaims := getClaims(accessTkn, pk, t)
+		initalAud := aClaims["aud"].(string)
+
 		secondResp := router.doNewAccessToken(refresh, auth.PasswordCredentials, http.StatusOK)
 		newAccessTkn := secondResp["access_token"].(string)
-		assertToken(newAccessTkn, pk, t)
+		getClaims(newAccessTkn, pk, t)
 		assert.NotEqual(t, accessTkn, newAccessTkn)
+
+		c2 := getClaims(newAccessTkn, pk, t)
+		a2 := c2["aud"].(string)
+
+		assert.Equal(t, initalAud, a2)
 	})
 
 	t.Run("Same but with client credentials", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK, "action-doer", "")
 		accessTkn := resp["access_token"].(string)
 		refresh := resp["refresh_token"].(string)
 
 		secondResp := router.doNewAccessToken(refresh, auth.ClientCredentials, http.StatusOK)
 		newAccessTkn := secondResp["access_token"].(string)
-		assertToken(newAccessTkn, pk, t)
+		getClaims(newAccessTkn, pk, t)
 		assert.NotEqual(t, accessTkn, newAccessTkn)
 	})
 
 	t.Run("Should fail if we use the access token", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK, "action-doer", "")
 		accessTkn := resp["access_token"].(string)
 		router.doNewAccessToken(accessTkn, auth.ClientCredentials, http.StatusForbidden)
 	})
@@ -176,7 +222,7 @@ func TestRefreshToken(t *testing.T) {
 
 	t.Run("We should be able to get new tokens with the refresh token", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK, "action-doer", "")
 		accessTkn := resp["access_token"].(string)
 		refresh := resp["refresh_token"].(string)
 
@@ -184,8 +230,8 @@ func TestRefreshToken(t *testing.T) {
 		newAccessTkn := secondResp["access_token"].(string)
 		newRefreshTkn := secondResp["refresh_token"].(string)
 
-		assertToken(newAccessTkn, pk, t)
-		assertToken(newRefreshTkn, pk, t)
+		getClaims(newAccessTkn, pk, t)
+		getClaims(newRefreshTkn, pk, t)
 
 		assert.NotEqual(t, accessTkn, newAccessTkn)
 		assert.NotEqual(t, refresh, newRefreshTkn)
@@ -193,7 +239,7 @@ func TestRefreshToken(t *testing.T) {
 
 	t.Run("Same but with client credentials", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK, "action-doer", "")
 		accessTkn := resp["access_token"].(string)
 		refresh := resp["refresh_token"].(string)
 
@@ -201,8 +247,8 @@ func TestRefreshToken(t *testing.T) {
 		newAccessTkn := secondResp["access_token"].(string)
 		newRefreshTkn := secondResp["refresh_token"].(string)
 
-		assertToken(newAccessTkn, pk, t)
-		assertToken(newRefreshTkn, pk, t)
+		getClaims(newAccessTkn, pk, t)
+		getClaims(newRefreshTkn, pk, t)
 
 		assert.NotEqual(t, accessTkn, newAccessTkn)
 		assert.NotEqual(t, refresh, newRefreshTkn)
@@ -210,7 +256,7 @@ func TestRefreshToken(t *testing.T) {
 
 	t.Run("Should fail if we use the access token", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK, "action-doer", "")
 		accessTkn := resp["access_token"].(string)
 		router.doNewAccessToken(accessTkn, auth.ClientCredentials, http.StatusForbidden)
 	})
@@ -222,35 +268,35 @@ func TestAccess(t *testing.T) {
 	require.NoError(t, err)
 	t.Run("We should access an endpoint if we have the right scopes", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK, "action-doer", "")
 		accessTkn := resp["access_token"].(string)
 		router.getActionEndpoint(accessTkn, auth.PasswordCredentials, http.StatusOK)
 	})
 
 	t.Run("Same with client credentials", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK, "admin", "")
 		accessTkn := resp["access_token"].(string)
 		router.getAdminEndpoint(accessTkn, auth.ClientCredentials, http.StatusOK)
 	})
 
 	t.Run("Deny access based on scopes", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK, "action-doer", "")
 		accessTkn := resp["access_token"].(string)
 		router.getAdminEndpoint(accessTkn, auth.PasswordCredentials, http.StatusForbidden)
 	})
 
 	t.Run("Reject access if we use refresh token", func(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK, "action-doer", "")
 		tkn := resp["refresh_token"].(string)
 		router.getAdminEndpoint(tkn, auth.PasswordCredentials, http.StatusForbidden)
 	})
 
 	t.Run("Reject expired token", func(t *testing.T) {
 		router := initMockService(t, users, time.Nanosecond, "www.myd0main.com", pk)
-		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK)
+		resp := router.doLogin("tito", "puente", auth.PasswordCredentials, http.StatusOK, "action-doer", "")
 		time.Sleep(time.Second)
 		tkn := resp["access_token"].(string)
 		router.getAdminEndpoint(tkn, auth.PasswordCredentials, http.StatusUnauthorized)
@@ -263,7 +309,7 @@ func TestAccess(t *testing.T) {
 
 		signer := auth.NewTokenSigner(otherPk, time.Hour, time.Hour, "www.myd0main.com")
 
-		tkn, err := signer.GetAccessToken("tito", "action-doer", auth.PasswordCredentials)
+		tkn, err := signer.GetAccessToken("tito", "action-doer", auth.PasswordCredentials, "aud")
 		require.NoError(t, err)
 
 		router.getAdminEndpoint(tkn, auth.PasswordCredentials, http.StatusUnauthorized)
@@ -284,10 +330,9 @@ func TestAccess(t *testing.T) {
 	})
 }
 
-func (router testRouter) doLogin(user string, pass string, grant string, expectedStatus int) map[string]interface{} {
-	body := `{}`
-	url := "/login"
-	req, err := http.NewRequest("POST", url, strings.NewReader(body))
+func (router testRouter) doLogin(user string, pass string, grant string, expectedStatus int, scope string, aud string) map[string]interface{} {
+	url := fmt.Sprintf("/authorize?scope=%s&aud=%s", scope, aud)
+	req, err := http.NewRequest("GET", url, nil)
 	require.NoError(router.T, err)
 
 	a := fmt.Sprintf("%s:%s", user, pass)
@@ -342,7 +387,7 @@ func (router testRouter) runRequest(req *http.Request, expectedStatus int) (int,
 	return w.Code, response
 }
 
-func assertToken(token string, pk *ecdsa.PrivateKey, t *testing.T) {
+func getClaims(token string, pk *ecdsa.PrivateKey, t *testing.T) jwt.MapClaims {
 	claims := jwt.MapClaims{}
 	_, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodECDSA); !ok {
@@ -350,6 +395,6 @@ func assertToken(token string, pk *ecdsa.PrivateKey, t *testing.T) {
 		}
 		return &pk.PublicKey, nil
 	})
-	//TODO: assert the claims...
 	require.NoError(t, err)
+	return claims
 }

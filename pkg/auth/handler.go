@@ -2,30 +2,33 @@ package auth
 
 import (
 	"encoding/base64"
+	"errors"
 	"github.com/gin-gonic/gin"
 	"net/http"
 	"regexp"
 	"strings"
 )
 
-type Handler interface {
-	AddLoginEndpoint(route gin.IRouter, relativePath string)
+type GinAuth interface {
+	AddAuthenticationEndpoint(route gin.IRouter, relativePath string)
 	AddTokenEndpoint(route gin.IRouter, relativePath string)
 	AddRefreshEndpoint(route gin.IRouter, relativePath string)
 	AddAuthProtocol(route gin.IRouter, middleware func(ctx *gin.Context))
 }
 
 type handler struct {
-	authService authorizationService
+	authService AuthorizationService
 }
 
-func DefaultAuthHandler(usrPwd Authorizer, clientCred Authorizer, signer TokenSigner, scopes ScopeProvider) Handler {
+func BasicGinAuth(usrPwd Authorizer, clientCred Authorizer,
+	signer TokenSigner, scopes ScopeProvider, clients ClientValidator) GinAuth {
+
 	authorizers := map[string]Authorizer{PasswordCredentials: usrPwd, ClientCredentials: clientCred}
-	return NewAuthHandler(authorizers, signer, scopes)
+	return NewGinAuth(authorizers, signer, scopes, clients)
 }
 
-func NewAuthHandler(authorizers map[string]Authorizer, signer TokenSigner, scopes ScopeProvider) Handler {
-	return &handler{authorizationService{authorizers, signer, scopes}}
+func NewGinAuth(authorizers map[string]Authorizer, signer TokenSigner, scopes ScopeProvider, clients ClientValidator) GinAuth {
+	return &handler{authService: NewAuthService(authorizers, signer, scopes, clients)}
 }
 
 type userData []string
@@ -43,7 +46,7 @@ func getCredentials(credentials string) userData {
 }
 
 func (ah handler) AddAuthProtocol(route gin.IRouter, middleware func(ctx *gin.Context)) {
-	route.POST("/login", ah.authorize)
+	route.GET("/authorize", ah.authorize)
 
 	tknGroup := route.Group("/token")
 	tknGroup.Use(middleware)
@@ -54,8 +57,8 @@ func (ah handler) AddAuthProtocol(route gin.IRouter, middleware func(ctx *gin.Co
 	accessTknGroup.GET("", WithScopes(ah.accessToken, []string{RefreshTokenScope}))
 }
 
-func (ah handler) AddLoginEndpoint(route gin.IRouter, relativePath string) {
-	route.POST(relativePath, ah.authorize)
+func (ah handler) AddAuthenticationEndpoint(route gin.IRouter, relativePath string) {
+	route.GET(relativePath, ah.authorize)
 }
 
 func (ah handler) AddTokenEndpoint(route gin.IRouter, relativePath string) {
@@ -64,6 +67,11 @@ func (ah handler) AddTokenEndpoint(route gin.IRouter, relativePath string) {
 
 func (ah handler) AddRefreshEndpoint(route gin.IRouter, relativePath string) {
 	route.GET(relativePath, WithScopes(ah.refreshToken, []string{RefreshTokenScope}))
+}
+
+type authorizeReq struct {
+	Scope string `form:"scope"`
+	Aud   string `form:"aud"`
 }
 
 func (ah handler) authorize(ctx *gin.Context) {
@@ -85,11 +93,20 @@ func (ah handler) authorize(ctx *gin.Context) {
 		return
 	}
 
+	var req authorizeReq
+	err = ctx.Bind(&req)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
 	credentials := getCredentials(string(decodedUserHash))
-	token, err := ah.authService.Authorize(UserCredentials{
+	scopes := strings.Split(strings.TrimSpace(req.Scope), ",")
+
+	token, err := ah.authService.Authorize(Credentials{
 		Id:       credentials.getName(),
 		Password: credentials.getPassword(),
-		Grant:    strings.ToLower(grantType)})
+		Grant:    strings.ToLower(grantType)}, scopes, req.Aud)
 
 	if err != nil {
 		switch err.(type) {
@@ -113,10 +130,22 @@ func (ah handler) accessToken(ctx *gin.Context) {
 		return
 	}
 
+	var req authorizeReq
+	err := ctx.Bind(&req)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
 	sender := r.(RequestAuthData).Sender
 	grantType := r.(RequestAuthData).GrantType
+	scopes := strings.Split(strings.TrimSpace(req.Scope), ",")
 
-	token, err := ah.authService.AccessToken(UserCredentials{sender, "", grantType})
+	aud, err := ah.extractAud(ctx)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	token, err := ah.authService.AccessToken(Credentials{sender, "", grantType}, scopes, aud)
 
 	if err != nil {
 		switch err.(type) {
@@ -140,10 +169,24 @@ func (ah handler) refreshToken(ctx *gin.Context) {
 		return
 	}
 
+	var req authorizeReq
+	err := ctx.Bind(&req)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
 	sender := r.(RequestAuthData).Sender
 	grantType := r.(RequestAuthData).GrantType
+	scopes := strings.Split(strings.TrimSpace(req.Scope), ",")
 
-	credentials, err := ah.authService.Refresh(UserCredentials{sender, "", grantType})
+	aud, err := ah.extractAud(ctx)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	credentials, err := ah.authService.Refresh(Credentials{sender, "", grantType}, scopes, aud)
 
 	if err != nil {
 		switch err.(type) {
@@ -156,6 +199,19 @@ func (ah handler) refreshToken(ctx *gin.Context) {
 		}
 	}
 	ctx.JSON(http.StatusOK, credentials)
+}
+
+func (ah handler) extractAud(ctx *gin.Context) (string, error) {
+	r, exists := ctx.Get(ReqAuthData)
+	if !exists {
+		return "", UnkownAud(errors.New("invalid aud claim"))
+	}
+
+	aud := r.(RequestAuthData).Aud
+	if len(strings.TrimSpace(aud)) > 0 {
+		return aud, nil
+	}
+	return "", UnkownAud(errors.New("invalid aud claim"))
 }
 
 func WithScopes(handler gin.HandlerFunc, scopes []string) gin.HandlerFunc {

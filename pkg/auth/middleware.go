@@ -14,6 +14,7 @@ type RequestAuthData struct {
 	Sender    string
 	Scopes    []string
 	GrantType string
+	Aud       string
 }
 
 const ReqAuthData = "requestAuthData"
@@ -40,9 +41,9 @@ func NewAuthMiddleware(pubKey *ecdsa.PublicKey) func(ctx *gin.Context) {
 
 		ctx.Set(ReqAuthData, RequestAuthData{
 			Sender:    claims["sub"].(string),
-			Scopes:    strings.Split(claims["scopes"].(string), " "),
+			Scopes:    strings.Split(claims["scope"].(string), " "),
 			GrantType: claims["grant_type"].(string),
-		})
+			Aud:       claims["aud"].(string)})
 
 		ctx.Next()
 	}
