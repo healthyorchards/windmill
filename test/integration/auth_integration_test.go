@@ -75,7 +75,10 @@ func initMockService(t *testing.T, users []demoUser, duration time.Duration, dom
 	router := gin.New()
 	gin.SetMode(gin.ReleaseMode)
 
-	middleware := auth.NewAuthMiddleware(&pk.PublicKey, id)
+	middleware := auth.NewAuthMiddleware(func() *ecdsa.PublicKey {
+		return &pk.PublicKey
+	}, id)
+
 	demoPath := router.Group("/demo")
 	demoPath.Use(middleware)
 

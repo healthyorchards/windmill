@@ -18,7 +18,7 @@ type RequestAuthData struct {
 
 const ReqAuthData = "requestAuthData"
 
-func NewAuthMiddleware(pubKey *ecdsa.PublicKey, identifier string) func(ctx *gin.Context) {
+func NewAuthMiddleware(pubKey func() *ecdsa.PublicKey, identifier string) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
 		authHeader := strings.Trim(ctx.Request.Header.Get("Authorization"), " ")
 		tknRegex := regexp.MustCompile(`(?i)bearer (.*)`)
@@ -31,7 +31,7 @@ func NewAuthMiddleware(pubKey *ecdsa.PublicKey, identifier string) func(ctx *gin
 		accessToken := tknRegex.FindAllStringSubmatch(authHeader, -1)[0][1]
 
 		claims := jwt.MapClaims{}
-		token, err := jwt.ParseWithClaims(accessToken, claims, GetKeyFunc(pubKey))
+		token, err := jwt.ParseWithClaims(accessToken, claims, GetKeyFunc(pubKey()))
 
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
