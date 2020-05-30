@@ -2,7 +2,6 @@ package auth
 
 import (
 	"crypto/ecdsa"
-	"fmt"
 	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-gonic/gin"
 	"net/http"
@@ -19,7 +18,7 @@ type RequestAuthData struct {
 
 const ReqAuthData = "requestAuthData"
 
-func NewAuthMiddleware(pubKey *ecdsa.PublicKey) func(ctx *gin.Context) {
+func NewAuthMiddleware(pubKey *ecdsa.PublicKey, identifier string) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
 		authHeader := strings.Trim(ctx.Request.Header.Get("Authorization"), " ")
 		tknRegex := regexp.MustCompile(`(?i)bearer (.*)`)
@@ -32,9 +31,14 @@ func NewAuthMiddleware(pubKey *ecdsa.PublicKey) func(ctx *gin.Context) {
 		accessToken := tknRegex.FindAllStringSubmatch(authHeader, -1)[0][1]
 
 		claims := jwt.MapClaims{}
-		_, err := jwt.ParseWithClaims(accessToken, claims, getKeyFunc(pubKey))
+		token, err := jwt.ParseWithClaims(accessToken, claims, GetKeyFunc(pubKey))
 
 		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		checkAud := token.Claims.(jwt.MapClaims).VerifyAudience(identifier, false)
+		if !checkAud {
 			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
@@ -46,14 +50,5 @@ func NewAuthMiddleware(pubKey *ecdsa.PublicKey) func(ctx *gin.Context) {
 			Aud:       claims["aud"].(string)})
 
 		ctx.Next()
-	}
-}
-
-func getKeyFunc(pubKey *ecdsa.PublicKey) func(token *jwt.Token) (interface{}, error) {
-	return func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodECDSA); !ok {
-			return nil, fmt.Errorf("wrong signing method")
-		}
-		return pubKey, nil
 	}
 }

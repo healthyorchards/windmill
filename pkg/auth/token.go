@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto/ecdsa"
+	"fmt"
 	"github.com/dgrijalva/jwt-go"
 	"time"
 )
@@ -19,12 +20,12 @@ type TokenSigner interface {
 	GetRefreshToken(userId string, grantType string, aud string) (string, error)
 }
 
-func NewTokenSigner(pkey *ecdsa.PrivateKey, atd time.Duration, rtd time.Duration, d string) TokenSigner {
+func NewTokenSigner(pkey *ecdsa.PrivateKey, atd time.Duration, rtd time.Duration, id string) TokenSigner {
 	return &tokenSigner{
 		privateKey:           pkey,
 		accessTokenDuration:  atd,
 		refreshTokenDuration: rtd,
-		domain:               d,
+		externalId:           id,
 	}
 }
 
@@ -32,7 +33,7 @@ type tokenSigner struct {
 	privateKey           *ecdsa.PrivateKey
 	accessTokenDuration  time.Duration
 	refreshTokenDuration time.Duration
-	domain               string
+	externalId           string
 }
 
 const RefreshTokenScope = "auth/refresh"
@@ -60,7 +61,7 @@ func (ts *tokenSigner) signToken(claims *tokenClaims) (string, error) {
 		"scope":      claims.Scopes,
 		"sub":        claims.UserId,
 		"aud":        claims.Aud,
-		"iss":        ts.domain,
+		"iss":        ts.externalId,
 		"exp":        time.Now().Add(claims.Exp).Unix(),
 		"grant_type": claims.GrantType,
 	})
@@ -72,5 +73,14 @@ func (ts *tokenSigner) getAudience(aud string) string {
 	if len(aud) > 0 {
 		return aud
 	}
-	return ts.domain
+	return ts.externalId
+}
+
+func GetKeyFunc(pubKey *ecdsa.PublicKey) func(token *jwt.Token) (interface{}, error) {
+	return func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodECDSA); !ok {
+			return nil, fmt.Errorf("wrong signing method")
+		}
+		return pubKey, nil
+	}
 }
