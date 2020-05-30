@@ -11,8 +11,10 @@ import (
 	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-gonic/gin"
 	"github.com/healthyorchards/windmill/pkg/auth"
+	"github.com/healthyorchards/windmill/pkg/auth/keys"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -345,6 +347,27 @@ func TestAccess(t *testing.T) {
 	})
 }
 
+func TestPublicKeyEndpoint(t *testing.T) {
+	users := []demoUser{}
+	pk, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	router := initMockService(t, users, time.Hour, defaultId, pk, defaultId)
+
+	pubKey := router.getPublicKey()
+	assert.NotNil(t, pubKey)
+	assert.Equal(t, pk.PublicKey, pubKey)
+
+	pk2, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	router2 := initMockService(t, users, time.Hour, defaultId, pk2, defaultId)
+
+	pubKey2 := router2.getPublicKey()
+	assert.NotNil(t, pubKey2)
+	assert.Equal(t, pk2.PublicKey, pubKey2)
+
+	assert.NotEqual(t,pubKey, pubKey2)
+}
+
 func (router testRouter) doLogin(user string, pass string, grant string, expectedStatus int, scope string, aud string) map[string]interface{} {
 	url := fmt.Sprintf("/authorize?scope=%s&aud=%s", scope, aud)
 	req, err := http.NewRequest("GET", url, nil)
@@ -368,6 +391,21 @@ func (router testRouter) getAdminEndpoint(accessToken string, grant string, expe
 
 func (router testRouter) getActionEndpoint(accessToken string, grant string, expectedStatus int) {
 	router.doAuthGet(accessToken, grant, expectedStatus, "/demo/action")
+}
+
+func (router testRouter) getPublicKey() ecdsa.PublicKey {
+	req, err := http.NewRequest("GET", "/public_key", nil)
+	require.NoError(router.T, err)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(router.T, http.StatusOK, w.Code)
+
+	key, err := ioutil.ReadAll(w.Body)
+
+	pk, err :=  keys.PemDecodePublicKey(string(key))
+	require.NoError(router.T, err)
+	return *pk
 }
 
 func (router testRouter) doNewAccessToken(refresh string, grant string, expectedStatus int) map[string]interface{} {

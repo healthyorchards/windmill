@@ -75,6 +75,13 @@ func (ah *app) AddAuthProtocol(route gin.IRouter, middleware func(ctx *gin.Conte
 	accessTknGroup := route.Group("/refresh")
 	accessTknGroup.Use(middleware)
 	accessTknGroup.GET("", WithScopes(ah.accessToken, []string{RefreshTokenScope}))
+
+	route.GET("/public_key", ah.getPubKey)
+
+	route.OPTIONS("/authorize", addPreflightCheckHeaders("GET"))
+	route.OPTIONS("/token", addPreflightCheckHeaders("GET"))
+	route.OPTIONS("/refresh", addPreflightCheckHeaders("GET"))
+	route.OPTIONS("/public_key", addPreflightCheckHeaders("GET"))
 }
 
 func (ah *app) AddAuthenticationEndpoint(route gin.IRouter, relativePath string) {
