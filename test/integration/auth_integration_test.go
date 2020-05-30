@@ -71,19 +71,25 @@ func initMockService(t *testing.T, users []demoUser, duration time.Duration, dom
 	demoPath := router.Group("/demo")
 	demoPath.Use(middleware)
 
-	signer := auth.NewTokenSigner(pk, duration, duration, domain)
-
 	data := map[string]demoUser{}
 	for _, u := range users {
 		data[u.Name] = u
 	}
 
 	inMemory := inMemoryData{data}
-	a := auth.BasicGinAuth(inMemory.authorizeHumanUser,
-		inMemory.authorizeHumanUser,
-		signer,
-		inMemory.getScopes,
-		inMemory.validateClient)
+	conf := &auth.GinAuthConfig{
+		UsrAuthorizer:      inMemory.authorizeHumanUser,
+		ClientAuthorizer:   inMemory.authorizeMachineUser,
+		ScopeProvider:      inMemory.getScopes,
+		ClientValidator:    inMemory.validateClient,
+		SigningKey:         pk,
+		AccessTknDuration:  duration,
+		RefreshTknDuration: duration,
+		AppId:              domain,
+	}
+
+	a, err := auth.BasicGinAuth(conf)
+	require.NoError(t, err)
 
 	a.AddAuthProtocol(router, middleware)
 	demoPath.GET("/admin", auth.WithScopes(func(ctx *gin.Context) {
