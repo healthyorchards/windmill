@@ -5,10 +5,10 @@ import (
 	"strings"
 )
 
-type Scopes string
+type Scopes []string
 
-func (s Scopes) list() []string {
-	return strings.Split(string(s), " ")
+func (s Scopes) ToString() string {
+	return strings.Join(s, ",")
 }
 
 type Credentials struct {
@@ -27,16 +27,16 @@ const AuthorizationHeader = "Authorization"
 //It returns an error if something went wrong
 type Authorizer func(uc Credentials) error
 
-// ScopeProvider retrieves a the Scopes ro a given user
-type ScopeProvider func(uc Credentials) (Scopes, error)
+// ScopeProvider retrieves, from the requested scopes, the ones that are actually granted for the user
+type ScopeProvider func(uc Credentials, requested Scopes) (Scopes, error)
 
 // ClientValidator checks if the given credentials are allowed to have access to the client
 type ClientValidator func(credentials Credentials, clientId string) (bool, error)
 
 type AuthorizationService interface {
-	Authorize(credentials Credentials, scope []string, aud string) (*TokenCredentials, error)
-	Refresh(credentials Credentials, scope []string, aud string) (*TokenCredentials, error)
-	AccessToken(credentials Credentials, scope []string, aud string) (string, error)
+	Authorize(credentials Credentials, scope Scopes, aud string) (*TokenCredentials, error)
+	Refresh(credentials Credentials, scope Scopes, aud string) (*TokenCredentials, error)
+	AccessToken(credentials Credentials, scope Scopes, aud string) (string, error)
 }
 type authorizationService struct {
 	authorizers map[string]Authorizer
@@ -58,7 +58,7 @@ func NewAuthService(authorizers map[string]Authorizer,
 		cValidator: clients}
 }
 
-func (as *authorizationService) Authorize(credentials Credentials, scope []string, aud string) (*TokenCredentials, error) {
+func (as *authorizationService) Authorize(credentials Credentials, scopes Scopes, aud string) (*TokenCredentials, error) {
 	authorizer, ok := as.authorizers[credentials.Grant]
 	if !ok {
 		return nil, InvalidGrant(errors.New("invalid grant type"))
@@ -72,29 +72,29 @@ func (as *authorizationService) Authorize(credentials Credentials, scope []strin
 		return nil, err
 	}
 
-	s, err := as.sProvider(credentials)
+	s, err := as.sProvider(credentials, scopes)
 	if err != nil {
 		return nil, err
 	}
 
-	return as.createCredentials(credentials.Id, getCuratedScopes(scope, s.list()), credentials.Grant, aud)
+	return as.createCredentials(credentials.Id, s, credentials.Grant, aud)
 }
 
-func (as *authorizationService) Refresh(credentials Credentials, scope []string, aud string) (*TokenCredentials, error) {
-	s, err := as.sProvider(credentials)
+func (as *authorizationService) Refresh(credentials Credentials, scopes Scopes, aud string) (*TokenCredentials, error) {
+	s, err := as.sProvider(credentials, scopes)
 	if err != nil {
 		return nil, err
 	}
 
-	return as.createCredentials(credentials.Id, getCuratedScopes(scope, s.list()), credentials.Grant, aud)
+	return as.createCredentials(credentials.Id, s, credentials.Grant, aud)
 }
 
-func (as *authorizationService) AccessToken(credentials Credentials, scope []string, aud string) (string, error) {
-	s, err := as.sProvider(credentials)
+func (as *authorizationService) AccessToken(credentials Credentials, scopes Scopes, aud string) (string, error) {
+	s, err := as.sProvider(credentials, scopes)
 	if err != nil {
 		return "", err
 	}
-	return as.signer.GetAccessToken(credentials.Id, getCuratedScopes(scope, s.list()), credentials.Grant, aud)
+	return as.signer.GetAccessToken(credentials.Id, s, credentials.Grant, aud)
 }
 
 func (as *authorizationService) createCredentials(senderId string, scopes Scopes, grantType string, aud string) (*TokenCredentials, error) {
@@ -123,19 +123,4 @@ func (as *authorizationService) checkAudience(aud string, credentials Credential
 		return UnkownAud(errors.New("unknown audience provided"))
 	}
 	return nil
-}
-
-func getCuratedScopes(requestedScopes []string, grantedScopes []string) Scopes {
-	s := map[string]bool{}
-	for _, item := range grantedScopes {
-		s[item] = true
-	}
-	var sb strings.Builder
-	for _, item := range requestedScopes {
-		if _, ok := s[item]; ok {
-			sb.WriteString(item)
-			sb.WriteString(" ")
-		}
-	}
-	return Scopes(strings.TrimSpace(sb.String()))
 }

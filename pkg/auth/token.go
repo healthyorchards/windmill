@@ -9,7 +9,7 @@ import (
 
 type tokenClaims struct {
 	UserId    string
-	Scopes    Scopes
+	Scopes    string
 	Exp       time.Duration
 	GrantType string
 	Aud       string
@@ -41,7 +41,7 @@ const RefreshTokenScope = "auth/refresh"
 func (ts *tokenSigner) GetAccessToken(userId string, scopes Scopes, grantType string, aud string) (string, error) {
 	return ts.signToken(&tokenClaims{
 		UserId:    userId,
-		Scopes:    scopes,
+		Scopes:    scopes.ToString(),
 		Exp:       ts.accessTokenDuration,
 		GrantType: grantType,
 		Aud:       ts.getAudience(aud)})

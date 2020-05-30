@@ -52,15 +52,21 @@ func (id inMemoryData) validateClient(credentials auth.Credentials, clientId str
 	return "forbidden-aud" != clientId, nil
 }
 
-func (id inMemoryData) getScopes(uc auth.Credentials) (auth.Scopes, error) {
+func (id inMemoryData) getScopes(uc auth.Credentials, rs auth.Scopes) (auth.Scopes, error) {
 	if uc.Grant == auth.ClientCredentials {
-		return "admin", nil
+		return []string{"admin"}, nil
 	}
 	u, ok := id.users[uc.Id]
 	if !ok {
-		return "", auth.InvalidUser(errors.New("i dont know this person"))
+		return nil, auth.InvalidUser(errors.New("i dont know this person"))
 	}
-	return auth.Scopes(u.Scopes), nil
+
+	for _, s := range rs {
+		if s == u.Scopes {
+			return []string{u.Scopes}, nil
+		}
+	}
+	return []string{}, nil
 }
 
 const defaultId = "www.myd0main.com"
@@ -319,7 +325,7 @@ func TestAccess(t *testing.T) {
 
 		signer := auth.NewTokenSigner(otherPk, time.Hour, time.Hour, "www.myd0main.com")
 
-		tkn, err := signer.GetAccessToken("tito", "action-doer", auth.PasswordCredentials, "aud")
+		tkn, err := signer.GetAccessToken("tito", []string{"action-doer"}, auth.PasswordCredentials, "aud")
 		require.NoError(t, err)
 
 		router.getAdminEndpoint(tkn, auth.PasswordCredentials, http.StatusUnauthorized)
@@ -365,7 +371,7 @@ func TestPublicKeyEndpoint(t *testing.T) {
 	assert.NotNil(t, pubKey2)
 	assert.Equal(t, pk2.PublicKey, pubKey2)
 
-	assert.NotEqual(t,pubKey, pubKey2)
+	assert.NotEqual(t, pubKey, pubKey2)
 }
 
 func (router testRouter) doLogin(user string, pass string, grant string, expectedStatus int, scope string, aud string) map[string]interface{} {
@@ -403,7 +409,7 @@ func (router testRouter) getPublicKey() ecdsa.PublicKey {
 
 	key, err := ioutil.ReadAll(w.Body)
 
-	pk, err :=  keys.PemDecodePublicKey(string(key))
+	pk, err := keys.PemDecodePublicKey(string(key))
 	require.NoError(router.T, err)
 	return *pk
 }
