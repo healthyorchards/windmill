@@ -22,7 +22,7 @@ func NewResourceServerMiddleware(pubKey func() *ecdsa.PublicKey, appId string) f
 	return NewAuthMiddleware(pubKey, ValidateAudience(appId))
 }
 
-func NewAuthServerMiddleware(pubKey func() *ecdsa.PublicKey, validations ...ClaimValidation) func(ctx *gin.Context) {
+func NewAuthServerMiddleware(pubKey func() *ecdsa.PublicKey) func(ctx *gin.Context) {
 	return NewAuthMiddleware(pubKey)
 }
 
@@ -46,7 +46,7 @@ func NewAuthMiddleware(pubKey func() *ecdsa.PublicKey, validations ...ClaimValid
 			return
 		}
 
-		for _, v := range validations{
+		for _, v := range validations {
 			errClaim := v(claims)
 			if errClaim != nil {
 				ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -63,4 +63,3 @@ func NewAuthMiddleware(pubKey func() *ecdsa.PublicKey, validations ...ClaimValid
 		ctx.Next()
 	}
 }
-

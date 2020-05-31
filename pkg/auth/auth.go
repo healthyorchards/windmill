@@ -36,13 +36,13 @@ type ScopeProvider func(uc Credentials, requested Scopes) (Scopes, error)
 // ClientValidator checks if the given credentials are allowed to have access to the client
 type ClientValidator func(credentials Credentials, clientId string) (bool, error)
 
-// Abstraction to authorize and generate credentials for a token base auth system
-type AuthorizationService interface {
+// TokenServer is an Abstraction to authorize and generate credentials for a token base auth system
+type TokenServer interface {
 	Authorize(credentials Credentials, scope Scopes, aud string) (*TokenCredentials, error)
 	Refresh(credentials Credentials, scope Scopes, aud string) (*TokenCredentials, error)
 	AccessToken(credentials Credentials, scope Scopes, aud string) (string, error)
 }
-type authorizationService struct {
+type authServer struct {
 	authorizers map[string]Authorizer
 	signer      TokenSigner
 	sProvider   ScopeProvider
@@ -55,10 +55,10 @@ type TokenCredentials struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
-// NewAuthService retrieves a AuthorizationService
-func NewAuthService(authorizers map[string]Authorizer,
-	signer TokenSigner, scopes ScopeProvider, clients ClientValidator) AuthorizationService {
-	return &authorizationService{authorizers: authorizers,
+// NewTokenServer retrieves a TokenServer
+func NewTokenServer(authorizers map[string]Authorizer,
+	signer TokenSigner, scopes ScopeProvider, clients ClientValidator) TokenServer {
+	return &authServer{authorizers: authorizers,
 		signer:     signer,
 		sProvider:  scopes,
 		cValidator: clients}
@@ -68,7 +68,7 @@ func NewAuthService(authorizers map[string]Authorizer,
 // credentials: requester credentials
 // scopes: requested scopes
 // aud: the resource server ID the requester wants to access
-func (as *authorizationService) Authorize(credentials Credentials, scopes Scopes, aud string) (*TokenCredentials, error) {
+func (as *authServer) Authorize(credentials Credentials, scopes Scopes, aud string) (*TokenCredentials, error) {
 	authorizer, ok := as.authorizers[credentials.Grant]
 	if !ok {
 		return nil, InvalidGrant(errors.New("invalid grant type"))
@@ -90,7 +90,7 @@ func (as *authorizationService) Authorize(credentials Credentials, scopes Scopes
 	return as.createCredentials(credentials.Id, s, credentials.Grant, aud)
 }
 
-func (as *authorizationService) Refresh(credentials Credentials, scopes Scopes, aud string) (*TokenCredentials, error) {
+func (as *authServer) Refresh(credentials Credentials, scopes Scopes, aud string) (*TokenCredentials, error) {
 	s, err := as.sProvider(credentials, scopes)
 	if err != nil {
 		return nil, err
@@ -99,7 +99,7 @@ func (as *authorizationService) Refresh(credentials Credentials, scopes Scopes, 
 	return as.createCredentials(credentials.Id, s, credentials.Grant, aud)
 }
 
-func (as *authorizationService) AccessToken(credentials Credentials, scopes Scopes, aud string) (string, error) {
+func (as *authServer) AccessToken(credentials Credentials, scopes Scopes, aud string) (string, error) {
 	s, err := as.sProvider(credentials, scopes)
 	if err != nil {
 		return "", err
@@ -107,7 +107,7 @@ func (as *authorizationService) AccessToken(credentials Credentials, scopes Scop
 	return as.signer.GetAccessToken(credentials.Id, s, credentials.Grant, aud)
 }
 
-func (as *authorizationService) createCredentials(senderId string, scopes Scopes, grantType string, aud string) (*TokenCredentials, error) {
+func (as *authServer) createCredentials(senderId string, scopes Scopes, grantType string, aud string) (*TokenCredentials, error) {
 	accessToken, err := as.signer.GetAccessToken(senderId, scopes, grantType, aud)
 	if err != nil {
 		return nil, err
@@ -124,7 +124,7 @@ func (as *authorizationService) createCredentials(senderId string, scopes Scopes
 	}, nil
 }
 
-func (as *authorizationService) checkAudience(aud string, credentials Credentials) error {
+func (as *authServer) checkAudience(aud string, credentials Credentials) error {
 	audCheck, err := as.cValidator(credentials, aud)
 	if err != nil {
 		return Unexpected(errors.New("invalid grant type"))
