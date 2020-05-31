@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"github.com/dgrijalva/jwt-go"
 	"time"
@@ -82,5 +83,17 @@ func GetKeyFunc(pubKey *ecdsa.PublicKey) func(token *jwt.Token) (interface{}, er
 			return nil, fmt.Errorf("wrong signing method")
 		}
 		return pubKey, nil
+	}
+}
+
+type ClaimValidation func(claims jwt.MapClaims) error
+
+func ValidateAudience(identifier string) ClaimValidation {
+	return func(claims jwt.MapClaims) error {
+		checkAud := claims.VerifyAudience(identifier, false)
+		if !checkAud {
+			return errors.New("invalid aud claim")
+		}
+		return nil
 	}
 }

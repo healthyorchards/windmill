@@ -75,12 +75,15 @@ func initMockService(t *testing.T, users []demoUser, duration time.Duration, dom
 	router := gin.New()
 	gin.SetMode(gin.ReleaseMode)
 
-	middleware := auth.NewAuthMiddleware(func() *ecdsa.PublicKey {
+	pubKey := func() *ecdsa.PublicKey {
 		return &pk.PublicKey
-	}, id)
+	}
+
+	authMiddleware := auth.NewAuthServerMiddleware(pubKey)
+	resourceMiddleware := auth.NewResourceServerMiddleware(pubKey, id)
 
 	demoPath := router.Group("/demo")
-	demoPath.Use(middleware)
+	demoPath.Use(resourceMiddleware)
 
 	data := map[string]demoUser{}
 	for _, u := range users {
@@ -102,7 +105,7 @@ func initMockService(t *testing.T, users []demoUser, duration time.Duration, dom
 	a, err := auth.BasicGinAuth(conf)
 	require.NoError(t, err)
 
-	a.AddAuthProtocol(router, middleware)
+	a.AddAuthProtocol(router, authMiddleware)
 	demoPath.GET("/admin", auth.WithScopes(func(ctx *gin.Context) {
 		ctx.JSON(http.StatusOK, gin.H{"result": "you are an admin"})
 	}, []string{"admin"}))

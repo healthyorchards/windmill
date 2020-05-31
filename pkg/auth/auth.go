@@ -5,12 +5,15 @@ import (
 	"strings"
 )
 
+// Scopes are the user scopes
 type Scopes []string
 
+// ToString transforms Scopes into a string separated by a ' '
 func (s Scopes) ToString() string {
-	return strings.Join(s, ",")
+	return strings.Join(s, " ")
 }
 
+// Credentials data for to attempt to identify a  user
 type Credentials struct {
 	Id       string
 	Password string
@@ -33,6 +36,7 @@ type ScopeProvider func(uc Credentials, requested Scopes) (Scopes, error)
 // ClientValidator checks if the given credentials are allowed to have access to the client
 type ClientValidator func(credentials Credentials, clientId string) (bool, error)
 
+// Abstraction to authorize and generate credentials for a token base auth system
 type AuthorizationService interface {
 	Authorize(credentials Credentials, scope Scopes, aud string) (*TokenCredentials, error)
 	Refresh(credentials Credentials, scope Scopes, aud string) (*TokenCredentials, error)
@@ -45,11 +49,13 @@ type authorizationService struct {
 	cValidator  ClientValidator
 }
 
+// TokenCredentials access_token + refresh_token
 type TokenCredentials struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 }
 
+// NewAuthService retrieves a AuthorizationService
 func NewAuthService(authorizers map[string]Authorizer,
 	signer TokenSigner, scopes ScopeProvider, clients ClientValidator) AuthorizationService {
 	return &authorizationService{authorizers: authorizers,
@@ -58,6 +64,10 @@ func NewAuthService(authorizers map[string]Authorizer,
 		cValidator: clients}
 }
 
+// Authorize attempts to authorize a requester using its credentials. And retrieves a set of TokenCredentials
+// credentials: requester credentials
+// scopes: requested scopes
+// aud: the resource server ID the requester wants to access
 func (as *authorizationService) Authorize(credentials Credentials, scopes Scopes, aud string) (*TokenCredentials, error) {
 	authorizer, ok := as.authorizers[credentials.Grant]
 	if !ok {

@@ -18,7 +18,15 @@ type RequestAuthData struct {
 
 const ReqAuthData = "requestAuthData"
 
-func NewAuthMiddleware(pubKey func() *ecdsa.PublicKey, identifier string) func(ctx *gin.Context) {
+func NewResourceServerMiddleware(pubKey func() *ecdsa.PublicKey, appId string) func(ctx *gin.Context) {
+	return NewAuthMiddleware(pubKey, ValidateAudience(appId))
+}
+
+func NewAuthServerMiddleware(pubKey func() *ecdsa.PublicKey, validations ...ClaimValidation) func(ctx *gin.Context) {
+	return NewAuthMiddleware(pubKey)
+}
+
+func NewAuthMiddleware(pubKey func() *ecdsa.PublicKey, validations ...ClaimValidation) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
 		authHeader := strings.Trim(ctx.Request.Header.Get("Authorization"), " ")
 		tknRegex := regexp.MustCompile(`(?i)bearer (.*)`)
@@ -31,16 +39,19 @@ func NewAuthMiddleware(pubKey func() *ecdsa.PublicKey, identifier string) func(c
 		accessToken := tknRegex.FindAllStringSubmatch(authHeader, -1)[0][1]
 
 		claims := jwt.MapClaims{}
-		token, err := jwt.ParseWithClaims(accessToken, claims, GetKeyFunc(pubKey()))
+		_, err := jwt.ParseWithClaims(accessToken, claims, GetKeyFunc(pubKey()))
 
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
-		checkAud := token.Claims.(jwt.MapClaims).VerifyAudience(identifier, false)
-		if !checkAud {
-			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-			return
+
+		for _, v := range validations{
+			errClaim := v(claims)
+			if errClaim != nil {
+				ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+				return
+			}
 		}
 
 		ctx.Set(ReqAuthData, RequestAuthData{
@@ -52,3 +63,4 @@ func NewAuthMiddleware(pubKey func() *ecdsa.PublicKey, identifier string) func(c
 		ctx.Next()
 	}
 }
+
