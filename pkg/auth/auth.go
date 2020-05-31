@@ -13,7 +13,7 @@ func (s Scopes) ToString() string {
 	return strings.Join(s, " ")
 }
 
-// Credentials data for to attempt to identify a  user
+// Credentials data to identify an user
 type Credentials struct {
 	Id       string
 	Password string
@@ -38,10 +38,11 @@ type ClientValidator func(credentials Credentials, clientId string) (bool, error
 
 // TokenServer is an Abstraction to authorize and generate credentials for a token base auth system
 type TokenServer interface {
-	Authorize(credentials Credentials, scope Scopes, aud string) (*TokenCredentials, error)
-	Refresh(credentials Credentials, scope Scopes, aud string) (*TokenCredentials, error)
-	AccessToken(credentials Credentials, scope Scopes, aud string) (string, error)
+	Authorize(credentials Credentials, scopes Scopes, aud string) (*TokenCredentials, error)
+	Refresh(refreshToken string, scopes Scopes) (*TokenCredentials, error)
+	AccessToken(refreshToken string, scopes Scopes) (string, error)
 }
+
 type authServer struct {
 	authorizers map[string]Authorizer
 	signer      TokenSigner
@@ -49,7 +50,7 @@ type authServer struct {
 	cValidator  ClientValidator
 }
 
-// TokenCredentials access_token + refresh_token
+// TokenCredentials access_token + refresh_token (signed)
 type TokenCredentials struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -73,11 +74,12 @@ func (as *authServer) Authorize(credentials Credentials, scopes Scopes, aud stri
 	if !ok {
 		return nil, InvalidGrant(errors.New("invalid grant type"))
 	}
-	err := as.checkAudience(aud, credentials)
+	err := authorizer(credentials)
 	if err != nil {
 		return nil, err
 	}
-	err = authorizer(credentials)
+
+	err = as.checkAudience(aud, credentials)
 	if err != nil {
 		return nil, err
 	}
@@ -90,21 +92,36 @@ func (as *authServer) Authorize(credentials Credentials, scopes Scopes, aud stri
 	return as.createCredentials(credentials.Id, s, credentials.Grant, aud)
 }
 
-func (as *authServer) Refresh(credentials Credentials, scopes Scopes, aud string) (*TokenCredentials, error) {
-	s, err := as.sProvider(credentials, scopes)
+// Authorize attempts to authorize a requester using its credentials. And retrieves a set of TokenCredentials
+// credentials: requester credentials
+// scopes: requested scopes
+// aud: the resource server ID the requester wants to access
+func (as *authServer) Refresh(refreshToken string, scopes Scopes) (*TokenCredentials, error) {
+	c, aud, err := as.parseRefreshToken(refreshToken)
 	if err != nil {
 		return nil, err
 	}
 
-	return as.createCredentials(credentials.Id, s, credentials.Grant, aud)
+	s, err := as.sProvider(*c, scopes)
+	if err != nil {
+		return nil, err
+	}
+
+	return as.createCredentials(c.Id, s, c.Grant, aud)
 }
 
-func (as *authServer) AccessToken(credentials Credentials, scopes Scopes, aud string) (string, error) {
-	s, err := as.sProvider(credentials, scopes)
+func (as *authServer) AccessToken(refreshToken string, scopes Scopes) (string, error) {
+	c, aud, err := as.parseRefreshToken(refreshToken)
 	if err != nil {
 		return "", err
 	}
-	return as.signer.GetAccessToken(credentials.Id, s, credentials.Grant, aud)
+
+	s, err := as.sProvider(*c, scopes)
+	if err != nil {
+		return "", err
+	}
+
+	return as.signer.GetAccessToken(c.Id, s, c.Grant, aud)
 }
 
 func (as *authServer) createCredentials(senderId string, scopes Scopes, grantType string, aud string) (*TokenCredentials, error) {
@@ -130,7 +147,34 @@ func (as *authServer) checkAudience(aud string, credentials Credentials) error {
 		return Unexpected(errors.New("invalid grant type"))
 	}
 	if !audCheck {
-		return UnkownAud(errors.New("unknown audience provided"))
+		return UnknownAudience(errors.New("unknown audience provided"))
 	}
 	return nil
+}
+
+func (as *authServer) parseRefreshToken(token string) (*Credentials, string, error) {
+	claims, err := as.signer.ParseToken(token)
+	if err != nil {
+		return nil, "", err
+	}
+
+	reqScope := strings.Split(claims["scope"].(string), " ")
+	if !checkRefreshScope(reqScope) {
+		return nil, "", InvalidToken(errors.New("missing scope"))
+	}
+
+	gType := claims["grant_type"].(string)
+	aud := claims["aud"].(string)
+	id := claims["sub"].(string)
+
+	return &Credentials{Id: id, Grant: gType}, aud, nil
+}
+
+func checkRefreshScope(scopes []string) bool {
+	for _, s := range scopes {
+		if s == RefreshTokenScope {
+			return true
+		}
+	}
+	return false
 }

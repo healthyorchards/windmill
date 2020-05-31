@@ -3,7 +3,6 @@ package auth
 import (
 	"crypto/ecdsa"
 	"encoding/base64"
-	"errors"
 	"github.com/gin-gonic/gin"
 	"github.com/healthyorchards/windmill/pkg/auth/keys"
 	"net/http"
@@ -70,11 +69,11 @@ func (ah *ginAuthServer) AddAuthProtocol(route gin.IRouter, middleware func(ctx 
 
 	tknGroup := route.Group("/token")
 	tknGroup.Use(middleware)
-	tknGroup.GET("", WithScopes(ah.refreshToken, []string{RefreshTokenScope}))
+	tknGroup.GET("", ah.refreshToken)
 
 	accessTknGroup := route.Group("/refresh")
 	accessTknGroup.Use(middleware)
-	accessTknGroup.GET("", WithScopes(ah.accessToken, []string{RefreshTokenScope}))
+	accessTknGroup.GET("", ah.accessToken)
 
 	route.GET("/public_key", ah.getPubKey)
 
@@ -158,29 +157,17 @@ func (ah *ginAuthServer) authorize(ctx *gin.Context) {
 }
 
 func (ah *ginAuthServer) accessToken(ctx *gin.Context) {
-	r, exists := ctx.Get(ReqAuthData)
-
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid grants"})
-		return
-	}
-
 	var req authorizeReq
 	err := ctx.Bind(&req)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-	sender := r.(RequestAuthData).Sender
-	grantType := r.(RequestAuthData).GrantType
+
+	refreshToken, _ := ctx.Get(RefreshToken)
 	scopes := strings.Split(strings.TrimSpace(req.Scope), ",")
 
-	aud, err := ah.extractAud(ctx)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		return
-	}
-	token, err := ah.authService.AccessToken(Credentials{sender, "", grantType}, scopes, aud)
+	token, err := ah.authService.AccessToken(refreshToken.(string), scopes)
 
 	if err != nil {
 		switch err.(type) {
@@ -197,31 +184,16 @@ func (ah *ginAuthServer) accessToken(ctx *gin.Context) {
 }
 
 func (ah *ginAuthServer) refreshToken(ctx *gin.Context) {
-	r, exists := ctx.Get(ReqAuthData)
-
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid grants"})
-		return
-	}
-
 	var req authorizeReq
 	err := ctx.Bind(&req)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	sender := r.(RequestAuthData).Sender
-	grantType := r.(RequestAuthData).GrantType
 	scopes := strings.Split(strings.TrimSpace(req.Scope), ",")
+	refreshToken, _ := ctx.Get(RefreshToken)
 
-	aud, err := ah.extractAud(ctx)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		return
-	}
-
-	credentials, err := ah.authService.Refresh(Credentials{sender, "", grantType}, scopes, aud)
+	credentials, err := ah.authService.Refresh(refreshToken.(string), scopes)
 
 	if err != nil {
 		switch err.(type) {
@@ -238,19 +210,6 @@ func (ah *ginAuthServer) refreshToken(ctx *gin.Context) {
 
 func (ah *ginAuthServer) getPubKey(c *gin.Context) {
 	c.String(http.StatusOK, ah.pubKey)
-}
-
-func (ah *ginAuthServer) extractAud(ctx *gin.Context) (string, error) {
-	r, exists := ctx.Get(ReqAuthData)
-	if !exists {
-		return "", UnkownAud(errors.New("invalid aud claim"))
-	}
-
-	aud := r.(RequestAuthData).Aud
-	if len(strings.TrimSpace(aud)) > 0 {
-		return aud, nil
-	}
-	return "", UnkownAud(errors.New("invalid aud claim"))
 }
 
 func WithScopes(handler gin.HandlerFunc, scopes []string) gin.HandlerFunc {

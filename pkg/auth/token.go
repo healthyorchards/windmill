@@ -19,6 +19,7 @@ type tokenClaims struct {
 type TokenSigner interface {
 	GetAccessToken(userId string, scopes Scopes, grantType string, aud string) (string, error)
 	GetRefreshToken(userId string, grantType string, aud string) (string, error)
+	ParseToken(token string) (jwt.MapClaims, error)
 }
 
 func NewTokenSigner(pkey *ecdsa.PrivateKey, atd time.Duration, rtd time.Duration, id string) TokenSigner {
@@ -55,6 +56,15 @@ func (ts *tokenSigner) GetRefreshToken(userId string, grantType string, aud stri
 		Exp:       ts.refreshTokenDuration,
 		GrantType: grantType,
 		Aud:       ts.getAudience(aud)})
+}
+
+func (ts *tokenSigner) ParseToken(token string) (jwt.MapClaims, error) {
+	claims := jwt.MapClaims{}
+	_, err := jwt.ParseWithClaims(token, claims, GetKeyFunc(&ts.privateKey.PublicKey))
+	if err != nil {
+		return nil, InvalidToken(err)
+	}
+	return claims, nil
 }
 
 func (ts *tokenSigner) signToken(claims *tokenClaims) (string, error) {

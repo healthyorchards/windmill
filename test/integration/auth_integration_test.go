@@ -233,7 +233,7 @@ func TestGetAccessToken(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk, defaultId)
 		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK, "action-doer", "")
 		accessTkn := resp["access_token"].(string)
-		router.doNewAccessToken(accessTkn, auth.ClientCredentials, http.StatusForbidden)
+		router.doNewAccessToken(accessTkn, auth.ClientCredentials, http.StatusUnauthorized)
 	})
 }
 
@@ -280,7 +280,7 @@ func TestRefreshToken(t *testing.T) {
 		router := initMockService(t, users, time.Hour, "www.myd0main.com", pk, defaultId)
 		resp := router.doLogin("tito", "puente", auth.ClientCredentials, http.StatusOK, "action-doer", "")
 		accessTkn := resp["access_token"].(string)
-		router.doNewAccessToken(accessTkn, auth.ClientCredentials, http.StatusForbidden)
+		router.doRefreshToken(accessTkn, auth.ClientCredentials, http.StatusUnauthorized)
 	})
 }
 

@@ -8,4 +8,6 @@ type InvalidUser error
 
 type Unexpected error
 
-type UnkownAud error
+type UnknownAudience error
+
+type InvalidToken error
