@@ -11,11 +11,17 @@ import (
 	"time"
 )
 
+// GinAuth is an abstraction to create a Auth server using the 'Gin' Framework
 type GinAuth interface {
+	// AddAuthenticationEndpoint register an endpoint in the given path to perform the authentication
 	AddAuthenticationEndpoint(route gin.IRouter, relativePath string)
-	AddTokenEndpoint(route gin.IRouter, relativePath string)
-	AddRefreshEndpoint(route gin.IRouter, relativePath string)
+	// AddAccessTokenEndpoint register an endpoint in the given path to generate a new AccessToken
+	AddAccessTokenEndpoint(route gin.IRouter, authMiddleware func(ctx *gin.Context), relativePath string)
+	// AddRefreshEndpoint register an endpoint in the given path to refresh both the RefreshToken and the AccessToken
+	AddRefreshEndpoint(route gin.IRouter, authMiddleware func(ctx *gin.Context), relativePath string)
+	// AddPubKeyEndpoint register an endpoint to retrieve the
 	AddPubKeyEndpoint(route gin.IRouter, relativePath string)
+	// AddAuthProtocol adds all previous endpoints
 	AddAuthProtocol(route gin.IRouter, middleware func(ctx *gin.Context))
 }
 
@@ -60,46 +66,37 @@ func (ud userData) getPassword() string {
 	return ud[1]
 }
 
-func getCredentials(credentials string) userData {
-	return strings.Split(credentials, ":")
+func (ginAuth *ginAuthServer) AddAuthProtocol(route gin.IRouter, authMiddleware func(ctx *gin.Context)) {
+	ginAuth.AddAuthenticationEndpoint(route, "/authorize")
+
+	ginAuth.AddRefreshEndpoint(route, authMiddleware, "/token")
+
+	ginAuth.AddAccessTokenEndpoint(route, authMiddleware, "/refresh")
+
+	ginAuth.AddPubKeyEndpoint(route, "/public_key")
 }
 
-func (ah *ginAuthServer) AddAuthProtocol(route gin.IRouter, middleware func(ctx *gin.Context)) {
-	route.GET("/authorize", ah.authorize)
-
-	tknGroup := route.Group("/token")
-	tknGroup.Use(middleware)
-	tknGroup.GET("", ah.refreshToken)
-
-	accessTknGroup := route.Group("/refresh")
-	accessTknGroup.Use(middleware)
-	accessTknGroup.GET("", ah.accessToken)
-
-	route.GET("/public_key", ah.getPubKey)
-
-	route.OPTIONS("/authorize", addPreflightCheckHeaders("GET"))
-	route.OPTIONS("/token", addPreflightCheckHeaders("GET"))
-	route.OPTIONS("/refresh", addPreflightCheckHeaders("GET"))
-	route.OPTIONS("/public_key", addPreflightCheckHeaders("GET"))
-}
-
-func (ah *ginAuthServer) AddAuthenticationEndpoint(route gin.IRouter, relativePath string) {
-	route.GET(relativePath, ah.authorize)
+func (ginAuth *ginAuthServer) AddAuthenticationEndpoint(route gin.IRouter, relativePath string) {
+	route.GET(relativePath, ginAuth.authorize)
 	route.OPTIONS(relativePath, addPreflightCheckHeaders("GET"))
 }
 
-func (ah *ginAuthServer) AddTokenEndpoint(route gin.IRouter, relativePath string) {
-	route.GET(relativePath, WithScopes(ah.accessToken, []string{RefreshTokenScope}))
+func (ginAuth *ginAuthServer) AddAccessTokenEndpoint(route gin.IRouter, authMiddleware func(ctx *gin.Context), relativePath string) {
+	accessTknGroup := route.Group(relativePath)
+	accessTknGroup.Use(authMiddleware)
+	accessTknGroup.GET("", ginAuth.accessToken)
 	route.OPTIONS(relativePath, addPreflightCheckHeaders("GET"))
 }
 
-func (ah *ginAuthServer) AddRefreshEndpoint(route gin.IRouter, relativePath string) {
-	route.GET(relativePath, WithScopes(ah.refreshToken, []string{RefreshTokenScope}))
+func (ginAuth *ginAuthServer) AddRefreshEndpoint(route gin.IRouter, authMiddleware func(ctx *gin.Context), relativePath string) {
+	accessTknGroup := route.Group(relativePath)
+	accessTknGroup.Use(authMiddleware)
+	accessTknGroup.GET("", ginAuth.refreshToken)
 	route.OPTIONS(relativePath, addPreflightCheckHeaders("GET"))
 }
 
-func (ah *ginAuthServer) AddPubKeyEndpoint(route gin.IRouter, relativePath string) {
-	route.GET(relativePath, ah.getPubKey)
+func (ginAuth *ginAuthServer) AddPubKeyEndpoint(route gin.IRouter, relativePath string) {
+	route.GET(relativePath, ginAuth.getPubKey)
 	route.OPTIONS(relativePath, addPreflightCheckHeaders("GET"))
 }
 
@@ -108,7 +105,7 @@ type authorizeReq struct {
 	Aud   string `form:"aud"`
 }
 
-func (ah *ginAuthServer) authorize(ctx *gin.Context) {
+func (ginAuth *ginAuthServer) authorize(ctx *gin.Context) {
 	grantType := ctx.Request.Header.Get(GrantTypeHeader)
 	authHeader := strings.Trim(ctx.Request.Header.Get(AuthorizationHeader), " ")
 	tknRegex := regexp.MustCompile(`(?i)basic (.*)`)
@@ -137,7 +134,7 @@ func (ah *ginAuthServer) authorize(ctx *gin.Context) {
 	credentials := getCredentials(string(decodedUserHash))
 	scopes := strings.Split(strings.TrimSpace(req.Scope), ",")
 
-	token, err := ah.authService.Authorize(Credentials{
+	token, err := ginAuth.authService.Authorize(Credentials{
 		Id:       credentials.getName(),
 		Password: credentials.getPassword(),
 		Grant:    strings.ToLower(grantType)}, scopes, req.Aud)
@@ -156,7 +153,7 @@ func (ah *ginAuthServer) authorize(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, token)
 }
 
-func (ah *ginAuthServer) accessToken(ctx *gin.Context) {
+func (ginAuth *ginAuthServer) accessToken(ctx *gin.Context) {
 	var req authorizeReq
 	err := ctx.Bind(&req)
 	if err != nil {
@@ -167,7 +164,7 @@ func (ah *ginAuthServer) accessToken(ctx *gin.Context) {
 	refreshToken, _ := ctx.Get(RefreshToken)
 	scopes := strings.Split(strings.TrimSpace(req.Scope), ",")
 
-	token, err := ah.authService.AccessToken(refreshToken.(string), scopes)
+	token, err := ginAuth.authService.AccessToken(refreshToken.(string), scopes)
 
 	if err != nil {
 		switch err.(type) {
@@ -183,7 +180,7 @@ func (ah *ginAuthServer) accessToken(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"access_token": token})
 }
 
-func (ah *ginAuthServer) refreshToken(ctx *gin.Context) {
+func (ginAuth *ginAuthServer) refreshToken(ctx *gin.Context) {
 	var req authorizeReq
 	err := ctx.Bind(&req)
 	if err != nil {
@@ -193,7 +190,7 @@ func (ah *ginAuthServer) refreshToken(ctx *gin.Context) {
 	scopes := strings.Split(strings.TrimSpace(req.Scope), ",")
 	refreshToken, _ := ctx.Get(RefreshToken)
 
-	credentials, err := ah.authService.Refresh(refreshToken.(string), scopes)
+	credentials, err := ginAuth.authService.Refresh(refreshToken.(string), scopes)
 
 	if err != nil {
 		switch err.(type) {
@@ -208,8 +205,8 @@ func (ah *ginAuthServer) refreshToken(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, credentials)
 }
 
-func (ah *ginAuthServer) getPubKey(c *gin.Context) {
-	c.String(http.StatusOK, ah.pubKey)
+func (ginAuth *ginAuthServer) getPubKey(c *gin.Context) {
+	c.String(http.StatusOK, ginAuth.pubKey)
 }
 
 func WithScopes(handler gin.HandlerFunc, scopes []string) gin.HandlerFunc {
@@ -240,6 +237,10 @@ func checkScopes(firstArray []string, secondArray []string) bool {
 		}
 	}
 	return false
+}
+
+func getCredentials(credentials string) userData {
+	return strings.Split(credentials, ":")
 }
 
 func addPreflightCheckHeaders(allowedMethods string) func(c *gin.Context) {

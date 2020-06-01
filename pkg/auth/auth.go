@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Scopes are the user scopes
+// Scopes is a mechanism in OAuth 2.0 to limit an application's access to a user's account.
 type Scopes []string
 
 // ToString transforms Scopes into a string separated by a ' '
@@ -92,10 +92,8 @@ func (as *authServer) Authorize(credentials Credentials, scopes Scopes, aud stri
 	return as.createCredentials(credentials.Id, s, credentials.Grant, aud)
 }
 
-// Authorize attempts to authorize a requester using its credentials. And retrieves a set of TokenCredentials
-// credentials: requester credentials
+// Refresh given a refresh token attempts to generate a new set of TokenCredentials
 // scopes: requested scopes
-// aud: the resource server ID the requester wants to access
 func (as *authServer) Refresh(refreshToken string, scopes Scopes) (*TokenCredentials, error) {
 	c, aud, err := as.parseRefreshToken(refreshToken)
 	if err != nil {
@@ -110,6 +108,8 @@ func (as *authServer) Refresh(refreshToken string, scopes Scopes) (*TokenCredent
 	return as.createCredentials(c.Id, s, c.Grant, aud)
 }
 
+// AccessToken given a refresh token attempts to generate ONLY a new Access Token
+// scopes: requested scopes
 func (as *authServer) AccessToken(refreshToken string, scopes Scopes) (string, error) {
 	c, aud, err := as.parseRefreshToken(refreshToken)
 	if err != nil {
