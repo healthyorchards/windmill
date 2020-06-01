@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+// Claim to add in the token
+type Claim struct {
+	Key   string
+	Value interface{}
+}
+
+// ClaimProvider provides additional claims for a given user and audience
+type ClaimProvider func(identifier string, aud string) ([]Claim, error)
+
 type tokenClaims struct {
 	UserId    string
 	Scopes    string
@@ -16,19 +25,12 @@ type tokenClaims struct {
 	Aud       string
 }
 
+// TokenSigner abstraction to handle token creation
 type TokenSigner interface {
-	GetAccessToken(userId string, scopes Scopes, grantType string, aud string) (string, error)
-	GetRefreshToken(userId string, grantType string, aud string) (string, error)
+	GetAccessToken(userId string, scopes Scopes, grantType string, aud string, claims ...Claim) (string, error)
+	GetRefreshToken(userId string, grantType string, aud string, claims ...Claim) (string, error)
 	ParseToken(token string) (jwt.MapClaims, error)
-}
-
-func NewTokenSigner(pkey *ecdsa.PrivateKey, atd time.Duration, rtd time.Duration, id string) TokenSigner {
-	return &tokenSigner{
-		privateKey:           pkey,
-		accessTokenDuration:  atd,
-		refreshTokenDuration: rtd,
-		externalId:           id,
-	}
+	GetSigningKey() ecdsa.PrivateKey
 }
 
 type tokenSigner struct {
@@ -38,26 +40,46 @@ type tokenSigner struct {
 	externalId           string
 }
 
+// SignerConfig configuration for a new TokenSigner
+type SignerConfig struct {
+	SigningKey         *ecdsa.PrivateKey
+	AccessTknDuration  time.Duration
+	RefreshTknDuration time.Duration
+	SignerIdentifier   string
+}
+
+// NewTokenSigner return an instance of TokenSigner
+func NewTokenSigner(c *SignerConfig) TokenSigner {
+	return &tokenSigner{
+		privateKey:           c.SigningKey,
+		accessTokenDuration:  c.AccessTknDuration,
+		refreshTokenDuration: c.RefreshTknDuration,
+		externalId:           c.SignerIdentifier}
+}
+
 const RefreshTokenScope = "auth/refresh"
 
-func (ts *tokenSigner) GetAccessToken(userId string, scopes Scopes, grantType string, aud string) (string, error) {
+// GetAccessToken generates a signed access_token
+func (ts *tokenSigner) GetAccessToken(userId string, scopes Scopes, grantType string, aud string, claims ...Claim) (string, error) {
 	return ts.signToken(&tokenClaims{
 		UserId:    userId,
 		Scopes:    scopes.ToString(),
 		Exp:       ts.accessTokenDuration,
 		GrantType: grantType,
-		Aud:       ts.getAudience(aud)})
+		Aud:       ts.getAudience(aud)}, claims)
 }
 
-func (ts *tokenSigner) GetRefreshToken(userId string, grantType string, aud string) (string, error) {
+// GetRefreshToken generates a signed refresh_token
+func (ts *tokenSigner) GetRefreshToken(userId string, grantType string, aud string, claims ...Claim) (string, error) {
 	return ts.signToken(&tokenClaims{
 		UserId:    userId,
 		Scopes:    RefreshTokenScope,
 		Exp:       ts.refreshTokenDuration,
 		GrantType: grantType,
-		Aud:       ts.getAudience(aud)})
+		Aud:       ts.getAudience(aud)}, claims)
 }
 
+// ParseToken parse and validate jwt token. Retrieves a jwt.MapClaims
 func (ts *tokenSigner) ParseToken(token string) (jwt.MapClaims, error) {
 	claims := jwt.MapClaims{}
 	_, err := jwt.ParseWithClaims(token, claims, GetKeyFunc(&ts.privateKey.PublicKey))
@@ -67,15 +89,25 @@ func (ts *tokenSigner) ParseToken(token string) (jwt.MapClaims, error) {
 	return claims, nil
 }
 
-func (ts *tokenSigner) signToken(claims *tokenClaims) (string, error) {
-	token := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
-		"scope":      claims.Scopes,
-		"sub":        claims.UserId,
-		"aud":        claims.Aud,
-		"iss":        ts.externalId,
-		"exp":        time.Now().Add(claims.Exp).Unix(),
-		"grant_type": claims.GrantType,
-	})
+// GetSigningKey retrieves the key used to sign the tokens
+func (ts *tokenSigner) GetSigningKey() ecdsa.PrivateKey {
+	return *ts.privateKey
+}
+
+func (ts *tokenSigner) signToken(claims *tokenClaims, additionalClaims []Claim) (string, error) {
+	claimMap := jwt.MapClaims{}
+	for _, c := range additionalClaims {
+		claimMap[c.Key] = c.Value
+	}
+
+	claimMap["scope"] = claims.Scopes
+	claimMap["sub"] = claims.UserId
+	claimMap["aud"] = claims.Aud
+	claimMap["iss"] = ts.externalId
+	claimMap["exp"] = time.Now().Add(claims.Exp).Unix()
+	claimMap["grant_type"] = claims.GrantType
+
+	token := jwt.NewWithClaims(jwt.SigningMethodES256, claimMap)
 	ret, err := token.SignedString(ts.privateKey)
 	return ret, err
 }
@@ -96,8 +128,10 @@ func GetKeyFunc(pubKey *ecdsa.PublicKey) func(token *jwt.Token) (interface{}, er
 	}
 }
 
+// ClaimValidation perform validation over the tokens claims
 type ClaimValidation func(claims jwt.MapClaims) error
 
+// ValidateAudience retrieves a ClaimValidation which validates that the 'aud' claim matches the identifier
 func ValidateAudience(identifier string) ClaimValidation {
 	return func(claims jwt.MapClaims) error {
 		checkAud := claims.VerifyAudience(identifier, false)

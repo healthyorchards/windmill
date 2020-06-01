@@ -4,7 +4,6 @@ import (
 	"crypto/ecdsa"
 	"encoding/base64"
 	"github.com/gin-gonic/gin"
-	"github.com/healthyorchards/windmill/pkg/auth/keys"
 	"net/http"
 	"regexp"
 	"strings"
@@ -27,7 +26,6 @@ type GinAuth interface {
 
 type ginAuthServer struct {
 	authService TokenServer
-	pubKey      string
 }
 
 type GinAuthConfig struct {
@@ -35,6 +33,7 @@ type GinAuthConfig struct {
 	ClientAuthorizer   Authorizer
 	ScopeProvider      ScopeProvider
 	ClientValidator    ClientValidator
+	ClaimProvider      ClaimProvider
 	SigningKey         *ecdsa.PrivateKey
 	AccessTknDuration  time.Duration
 	RefreshTknDuration time.Duration
@@ -42,18 +41,30 @@ type GinAuthConfig struct {
 }
 
 func BasicGinAuth(c *GinAuthConfig) (GinAuth, error) {
-	signer := NewTokenSigner(c.SigningKey, c.AccessTknDuration, c.RefreshTknDuration, c.AppId)
+	signer := NewTokenSigner(&SignerConfig{
+		SigningKey:         c.SigningKey,
+		AccessTknDuration:  c.AccessTknDuration,
+		RefreshTknDuration: c.RefreshTknDuration,
+		SignerIdentifier:   c.AppId})
+
 	authorizers := map[string]Authorizer{PasswordCredentials: c.UsrAuthorizer, ClientCredentials: c.ClientAuthorizer}
-	pubKey, err := keys.PemEncodePublicKey(&c.SigningKey.PublicKey)
+	return NewGinAuth(authorizers, c.ClaimProvider, signer, c.ScopeProvider, c.ClientValidator)
+}
+
+func NewGinAuth(authorizers map[string]Authorizer, clProv ClaimProvider,
+	signer TokenSigner, scopes ScopeProvider, clients ClientValidator) (GinAuth, error) {
+	tknServerConfig := &TokenServerConfig{
+		Authorizers:     authorizers,
+		Signer:          signer,
+		ScopesProvider:  scopes,
+		ClaimProvider:   clProv,
+		ClientValidator: clients,
+	}
+	tknServer, err := NewTokenServer(tknServerConfig)
 	if err != nil {
 		return nil, err
 	}
-	return NewGinAuth(authorizers, signer, c.ScopeProvider, c.ClientValidator, pubKey), nil
-}
-
-func NewGinAuth(authorizers map[string]Authorizer,
-	signer TokenSigner, scopes ScopeProvider, clients ClientValidator, pubKey string) GinAuth {
-	return &ginAuthServer{authService: NewTokenServer(authorizers, signer, scopes, clients), pubKey: pubKey}
+	return &ginAuthServer{authService: tknServer}, nil
 }
 
 type userData []string
@@ -206,7 +217,7 @@ func (ginAuth *ginAuthServer) refreshToken(ctx *gin.Context) {
 }
 
 func (ginAuth *ginAuthServer) getPubKey(c *gin.Context) {
-	c.String(http.StatusOK, ginAuth.pubKey)
+	c.String(http.StatusOK, ginAuth.authService.GetEncodedPubKey())
 }
 
 func WithScopes(handler gin.HandlerFunc, scopes []string) gin.HandlerFunc {

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"github.com/healthyorchards/windmill/pkg/auth/keys"
 	"strings"
 )
 
@@ -36,11 +37,27 @@ type ScopeProvider func(uc Credentials, requested Scopes) (Scopes, error)
 // ClientValidator checks if the given credentials are allowed to have access to the client
 type ClientValidator func(credentials Credentials, clientId string) (bool, error)
 
+// TokenCredentials access_token + refresh_token (signed)
+type TokenCredentials struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
 // TokenServer is an Abstraction to authorize and generate credentials for a token base auth system
 type TokenServer interface {
 	Authorize(credentials Credentials, scopes Scopes, aud string) (*TokenCredentials, error)
 	Refresh(refreshToken string, scopes Scopes) (*TokenCredentials, error)
 	AccessToken(refreshToken string, scopes Scopes) (string, error)
+	GetEncodedPubKey() string
+}
+
+// TokenServerConfig parameters needed to invoke NewTokenServer
+type TokenServerConfig struct {
+	Authorizers     map[string]Authorizer
+	Signer          TokenSigner
+	ScopesProvider  ScopeProvider
+	ClientValidator ClientValidator
+	ClaimProvider   ClaimProvider
 }
 
 type authServer struct {
@@ -48,21 +65,31 @@ type authServer struct {
 	signer      TokenSigner
 	sProvider   ScopeProvider
 	cValidator  ClientValidator
-}
-
-// TokenCredentials access_token + refresh_token (signed)
-type TokenCredentials struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
+	cProvider   ClaimProvider
+	pubKey      string
 }
 
 // NewTokenServer retrieves a TokenServer
-func NewTokenServer(authorizers map[string]Authorizer,
-	signer TokenSigner, scopes ScopeProvider, clients ClientValidator) TokenServer {
-	return &authServer{authorizers: authorizers,
-		signer:     signer,
-		sProvider:  scopes,
-		cValidator: clients}
+func NewTokenServer(c *TokenServerConfig) (TokenServer, error) {
+	cp := c.ClaimProvider
+	if cp == nil {
+		emtpy := []Claim{}
+		cp = func(identifier string, aud string) ([]Claim, error) {
+			return emtpy, nil
+		}
+	}
+	pubKey := c.Signer.GetSigningKey()
+	encodedKey, err := keys.PemEncodePublicKey(&pubKey.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+	return &authServer{authorizers: c.Authorizers,
+		signer:     c.Signer,
+		sProvider:  c.ScopesProvider,
+		cValidator: c.ClientValidator,
+		cProvider:  cp,
+		pubKey:     encodedKey,
+	}, nil
 }
 
 // Authorize attempts to authorize a requester using its credentials. And retrieves a set of TokenCredentials
@@ -124,13 +151,23 @@ func (as *authServer) AccessToken(refreshToken string, scopes Scopes) (string, e
 	return as.signer.GetAccessToken(c.Id, s, c.Grant, aud)
 }
 
+// GetEncodedPubKey retrieves a pem encoded string with the pub key of the server
+func (as *authServer) GetEncodedPubKey() string {
+	return as.pubKey
+}
+
 func (as *authServer) createCredentials(senderId string, scopes Scopes, grantType string, aud string) (*TokenCredentials, error) {
-	accessToken, err := as.signer.GetAccessToken(senderId, scopes, grantType, aud)
+	additionalClaims, err := as.cProvider(senderId, aud)
 	if err != nil {
 		return nil, err
 	}
 
-	refreshToken, err := as.signer.GetRefreshToken(senderId, grantType, aud)
+	accessToken, err := as.signer.GetAccessToken(senderId, scopes, grantType, aud, additionalClaims...)
+	if err != nil {
+		return nil, err
+	}
+
+	refreshToken, err := as.signer.GetRefreshToken(senderId, grantType, aud, additionalClaims...)
 	if err != nil {
 		return nil, err
 	}

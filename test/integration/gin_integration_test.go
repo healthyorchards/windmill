@@ -79,8 +79,8 @@ func initMockService(t *testing.T, users []demoUser, duration time.Duration, dom
 		return &pk.PublicKey
 	}
 
-	authMiddleware := auth.NewAuthServerMiddleware(pubKey)
-	resourceMiddleware := auth.NewResourceServerMiddleware(pubKey, id)
+	authMiddleware := auth.NewAuthServerMiddleware()
+	resourceMiddleware := auth.NewBasicMiddleware(pubKey, id)
 
 	demoPath := router.Group("/demo")
 	demoPath.Use(resourceMiddleware)
@@ -329,7 +329,11 @@ func TestAccess(t *testing.T) {
 		otherPk, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		require.NoError(t, err)
 
-		signer := auth.NewTokenSigner(otherPk, time.Hour, time.Hour, "www.myd0main.com")
+		signer := auth.NewTokenSigner(&auth.SignerConfig{
+			SigningKey:         otherPk,
+			AccessTknDuration:  time.Hour,
+			RefreshTknDuration: time.Hour,
+			SignerIdentifier:   "www.myd0main.com"})
 
 		tkn, err := signer.GetAccessToken("tito", []string{"action-doer"}, auth.PasswordCredentials, "aud")
 		require.NoError(t, err)
